@@ -17,7 +17,8 @@ type OpenOfficeExtractor struct {
 	defaults      map[string]string
 	relationships map[string]Relationship
 	context       []string
-	pieces        [][]rune // Changed from []string to [][]rune
+	pieces        [][]rune   // Changed from []string to [][]rune
+	piecesStack   [][][]rune // Stack to hold pieces state for nested contexts like textboxes
 }
 
 type Action struct {
@@ -179,6 +180,7 @@ func (e *OpenOfficeExtractor) handleOpenTag(se xml.StartElement) {
 	}
 
 	switch se.Name.Local {
+	// Match JS order
 	case "Override":
 		var contentType, partName string
 		for _, attr := range se.Attr {
@@ -227,17 +229,7 @@ func (e *OpenOfficeExtractor) handleOpenTag(se xml.StartElement) {
 		e.context = []string{"content", "header"}
 		e.pieces = [][]rune{}
 
-	case "tab":
-		if len(e.context) > 0 && e.context[0] == "content" {
-			e.pieces = append(e.pieces, []rune("\t"))
-		}
-
-	case "br":
-		if len(e.context) > 0 && e.context[0] == "content" {
-			e.pieces = append(e.pieces, []rune("\n"))
-		}
-
-	case "endnote", "footnote":
+	case "endnote", "footnote": // JS: w:endnote, w:footnote
 		typ := "content"
 		for _, attr := range se.Attr {
 			if attr.Name.Local == "type" {
@@ -246,21 +238,54 @@ func (e *OpenOfficeExtractor) handleOpenTag(se xml.StartElement) {
 		}
 		e.context = append([]string{typ}, e.context...)
 
-	case "del", "instrText":
+	case "tab": // JS: w:tab
+		if len(e.context) > 0 && e.context[0] == "content" {
+			e.pieces = append(e.pieces, []rune("\t"))
+		}
+
+	case "br": // JS: w:br
+		if len(e.context) > 0 && e.context[0] == "content" {
+			// Check for page break type, although currently treated the same as line break
+			// brType := ""
+			// for _, attr := range se.Attr {
+			// 	if attr.Name.Local == "type" {
+			// 		brType = attr.Value
+			// 		break
+			// 	}
+			// }
+			// if brType == "page" {
+			// 	e.pieces = append(e.pieces, []rune("\\n")) // Or handle page break differently if needed later
+			// } else {
+			// 	e.pieces = append(e.pieces, []rune("\\n"))
+			// }
+			// Simplified version since outcome is currently the same:
+			e.pieces = append(e.pieces, []rune("\n"))
+		}
+
+	case "del", "instrText": // JS: w:del, w:instrText
 		e.context = append([]string{"deleted"}, e.context...)
 
-	case "tc":
+	case "tabs": // JS: w:tabs
+		e.context = append([]string{"tabs"}, e.context...)
+
+	case "tc": // JS: w:tc
 		e.context = append([]string{"cell"}, e.context...)
 
-	case "drawing":
+	case "drawing": // JS: w:drawing
 		e.context = append([]string{"drawing"}, e.context...)
 
-	case "txbxContent":
-		e.context = append([]string{"textbox"}, e.context...)
-		oldPieces := e.pieces
+	case "txbxContent": // JS: w:txbxContent
+		// Push current pieces onto the stack
+		e.piecesStack = append(e.piecesStack, e.pieces)
+		// Reset pieces for the textbox content
 		e.pieces = [][]rune{}
+		// Push textbox context marker
 		e.context = append([]string{"textbox"}, e.context...)
-		e.pieces = append(oldPieces, e.pieces...)
+		// --- Original incorrect Go logic removed ---
+		// oldPieces := e.pieces
+		// e.pieces = [][]rune{}
+		// e.context = append([]string{"textbox"}, e.context...)
+		// e.pieces = append(oldPieces, e.pieces...)
 	}
 }
 
@@ -271,73 +296,121 @@ func (e *OpenOfficeExtractor) handleCloseTag(ee xml.EndElement) {
 	}
 
 	switch ee.Name.Local {
-	case "document":
+	// Match JS order
+	case "document": // JS: w:document
 		e.document.Body = string(joinRunes(e.pieces))
 		e.context = nil
 
-	case "footnotes":
+	case "footnote", "endnote": // JS: w:footnote, w:endnote (Combined in Go)
+		if len(e.context) > 0 {
+			e.context = e.context[1:]
+		}
+
+	case "footnotes": // JS: w:footnotes
 		e.document.Footnotes = string(joinRunes(e.pieces))
 		e.context = nil
 
-	case "endnotes":
+	case "endnotes": // JS: w:endnotes
 		e.document.Endnotes = string(joinRunes(e.pieces))
 		e.context = nil
 
-	case "comments":
+	case "comments": // JS: w:comments
 		e.document.Annotations = string(joinRunes(e.pieces))
 		e.context = nil
 
-	case "hdr":
+	case "hdr": // JS: w:hdr
 		e.document.Headers += string(joinRunes(e.pieces))
 		e.context = nil
 
-	case "ftr":
+	case "ftr": // JS: w:ftr
 		e.document.Footers += string(joinRunes(e.pieces))
 		e.context = nil
 
-	case "p":
+	case "p": // JS: w:p
 		if len(e.context) > 0 && (e.context[0] == "content" || e.context[0] == "cell" || e.context[0] == "textbox") {
-			e.pieces = append(e.pieces, []rune("\n"))
+			e.pieces = append(e.pieces, []rune("\n")) // Corrected: Use newline rune
+		}
+
+	case "del", "instrText": // JS: w:del, w:instrText
+		if len(e.context) > 0 {
+			e.context = e.context[1:]
+		}
+
+	case "tabs": // JS: w:tabs
+		if len(e.context) > 0 {
+			e.context = e.context[1:]
 		}
 
 	case "tc":
+		// In JS, it pops the last piece (often a \n from <w:p>) before adding \t.
 		if len(e.pieces) > 0 {
 			e.pieces = e.pieces[:len(e.pieces)-1]
 		}
 		e.pieces = append(e.pieces, []rune("\t"))
 		if len(e.context) > 0 {
+			e.context = e.context[1:] // Pop "cell"
+		}
+
+	case "tr": // JS: w:tr
+		// Add newline after a table row (Matches JS unconditional behavior)
+		e.pieces = append(e.pieces, []rune("\n")) // Corrected: Use newline rune and remove condition
+
+	case "drawing": // JS: w:drawing
+		if len(e.context) > 0 {
 			e.context = e.context[1:]
 		}
 
 	case "txbxContent":
-		if len(e.context) < 3 {
+		// Get the text content accumulated within the textbox
+		textBox := string(joinRunes(e.pieces))
+
+		if e.context[0] != "textbox" {
+			fmt.Printf("Warning: Invalid textbox context\n")
 			return
 		}
-		textBox := string(joinRunes(e.pieces))
-		e.context = e.context[1:] // remove "textbox"
-
-		// Restore previous pieces from context
-		prevPieces := [][]rune{}
-		idx := 0
-		for i, ctx := range e.context {
-			if ctx != "" {
-				prevPieces = e.pieces[i:]
-				idx = i
-				break
-			}
+		// Pop the textbox context marker
+		if len(e.context) > 0 {
+			e.context = e.context[1:] // Pop "textbox"
 		}
-		e.context = e.context[:idx]
-		e.pieces = prevPieces
 
-		// If in drawing context, discard
+		// Pop the previous pieces state from the stack
+		if len(e.piecesStack) > 0 {
+			e.pieces = e.piecesStack[len(e.piecesStack)-1]
+			e.piecesStack = e.piecesStack[:len(e.piecesStack)-1]
+		} else {
+			// Should not happen if open/close tags are balanced
+			e.pieces = [][]rune{} // Reset pieces if stack is empty
+		}
+
+		// --- Original incorrect Go restoration logic removed ---
+		// if len(e.context) < 3 { // This check was arbitrary
+		// 	return
+		// }
+		// textBox := string(joinRunes(e.pieces))
+		// e.context = e.context[1:] // remove "textbox"
+		// // Restore previous pieces from context
+		// prevPieces := [][]rune{}
+		// idx := 0
+		// for i, ctx := range e.context {
+		// 	if ctx != "" {
+		// 		prevPieces = e.pieces[i:] // Incorrect logic
+		// 		idx = i
+		// 		break
+		// 	}
+		// }
+		// e.context = e.context[:idx]
+		// e.pieces = prevPieces
+
+		// If in drawing context, discard (Matches JS)
 		if len(e.context) > 0 && e.context[0] == "drawing" {
 			return
 		}
 
-		if textBox == "" {
+		if textBox == "" { // Matches JS
 			return
 		}
 
+		// Check if inside a header/footer (Matches JS)
 		inHeader := false
 		for _, ctx := range e.context {
 			if ctx == "header" {
@@ -346,6 +419,7 @@ func (e *OpenOfficeExtractor) handleCloseTag(ee xml.EndElement) {
 			}
 		}
 
+		// Append to the appropriate document field (Matches JS)
 		if inHeader {
 			if e.document.HeaderTextboxes != "" {
 				e.document.HeaderTextboxes += "\n"
@@ -365,8 +439,14 @@ func (e *OpenOfficeExtractor) handleCharData(cd xml.CharData) {
 		return
 	}
 
+	// fmt.Printf("CharData: %s\n", string(cd))
+	// fmt.Printf("Current context: %s\n", e.context[0])
+
 	if e.context[0] == "content" || e.context[0] == "cell" || e.context[0] == "textbox" {
+		// fmt.Printf("Append to pieces: %s\n", string(cd))
 		e.pieces = append(e.pieces, []rune(string(cd)))
+
+		// fmt.Printf("Current pieces: %s\n", string(joinRunes(e.pieces)))
 	}
 }
 

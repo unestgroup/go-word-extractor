@@ -1,6 +1,8 @@
 package word_extractor
 
-import "strings"
+import (
+	"strings"
+)
 
 // Document implements the main document returned when a Word file has been extracted.
 // This exposes methods that allow the body, annotations, headers, footnotes, and
@@ -47,7 +49,7 @@ func (d *Document) GetBody(opts *Options) string {
 		opts = defaultOptions()
 	}
 	if opts.FilterUnicode {
-		return Filter(d.Body)
+		return filterText(d.Body)
 	}
 	return d.Body
 }
@@ -62,7 +64,7 @@ func (d *Document) GetHeaders(opts *Options) string {
 		value += d.Footers
 	}
 	if opts.FilterUnicode {
-		return Filter(value)
+		return filterText(value)
 	}
 	return value
 }
@@ -73,7 +75,7 @@ func (d *Document) GetFootnotes(opts *Options) string {
 		opts = defaultOptions()
 	}
 	if opts.FilterUnicode {
-		return Filter(d.Footnotes)
+		return filterText(d.Footnotes)
 	}
 	return d.Footnotes
 }
@@ -83,7 +85,7 @@ func (d *Document) GetEndnotes(opts *Options) string {
 		opts = defaultOptions()
 	}
 	if opts.FilterUnicode {
-		return Filter(d.Endnotes)
+		return filterText(d.Endnotes)
 	}
 	return d.Endnotes
 }
@@ -93,7 +95,7 @@ func (d *Document) GetFooters(opts *Options) string {
 		opts = defaultOptions()
 	}
 	if opts.FilterUnicode {
-		return Filter(d.Footers)
+		return filterText(d.Footers)
 	}
 	return d.Footers
 }
@@ -103,7 +105,7 @@ func (d *Document) GetAnnotations(opts *Options) string {
 		opts = defaultOptions()
 	}
 	if opts.FilterUnicode {
-		return Filter(d.Annotations)
+		return filterText(d.Annotations)
 	}
 	return d.Annotations
 }
@@ -124,7 +126,7 @@ func (d *Document) GetTextboxes(opts *Options) string {
 
 	result := strings.Join(parts, "\n")
 	if opts.FilterUnicode {
-		return Filter(result)
+		return filterText(result)
 	}
 	return result
 }

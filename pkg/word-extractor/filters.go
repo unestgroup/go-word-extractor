@@ -98,7 +98,7 @@ func binaryToUnicode(text string) string {
 }
 
 // Filter replaces common Unicode punctuation with ASCII equivalents
-func Filter(text string) string {
+func filterText(text string) string {
 	var result strings.Builder
 	for _, r := range text {
 		if replacement, ok := filterTable[r]; ok {
