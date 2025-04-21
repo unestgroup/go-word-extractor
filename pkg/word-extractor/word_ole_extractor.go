@@ -9,7 +9,7 @@ import (
 	"io/ioutil"
 	"os"
 	"strings"
-	"unicode/utf8"
+	"unicode/utf16"
 
 	"github.com/richardlehane/mscfb"
 )
@@ -161,6 +161,10 @@ func (w *WordOleExtractor) extractWordDocument(reader io.ReadSeeker, buffer []by
 func (w *WordOleExtractor) buildDocument() (*Document, error) {
 	doc := NewDocument()
 	start := 0
+
+	// fmt.Printf("Start: %d\n", start)
+	// fmt.Printf("End: %d\n", start+w.boundaries.CcpText)
+	// fmt.Printf("Body length: %d\n", len(w.getTextRangeByCP(start, start+w.boundaries.CcpText)))
 
 	// Extract body text
 	doc.Body = cleanText(w.getTextRangeByCP(start, start+w.boundaries.CcpText))
@@ -350,7 +354,9 @@ func (w *WordOleExtractor) writePieces(buffer, tableBuffer []byte) error {
 		}
 
 		// Update Length to use rune count
-		piece.Length = utf8.RuneCountInString(piece.Text)
+		// piece.Length = utf8.RuneCountInString(piece.Text)
+		utf16Encoded := utf16.Encode([]rune(piece.Text))
+		piece.Length = len(utf16Encoded)
 		piece.EndCp = piece.StartCp + piece.Length
 		piece.EndStream = piece.StartStream + piece.Size
 		piece.EndFilePos = piece.StartFilePos + piece.Size
@@ -431,31 +437,45 @@ func (w *WordOleExtractor) getTextRangeByCP(start, end int) string {
 	startPiece := getPieceIndexByCP(w.pieces, start)
 	endPiece := getPieceIndexByCP(w.pieces, end)
 
-	var result []string
+	// fmt.Printf("getTextRangeByCP: startPiece: %d, endPiece: %d\\n", startPiece, endPiece)
+
+	var result strings.Builder // Use strings.Builder for efficiency
 	for i := startPiece; i <= endPiece; i++ {
 		piece := w.pieces[i]
-		runes := []rune(piece.Text)
+		// Convert piece text to UTF-16 slice
+		utf16Encoded := utf16.Encode([]rune(piece.Text))
+		// fmt.Printf("piece: %d, utf16 units: %d\\n", len(piece.Text), len(utf16Encoded))
+
+		// Calculate start and end indices based on CP (UTF-16 units)
 		xstart := 0
 		if i == startPiece {
 			xstart = start - piece.StartCp
 		}
+		// Use piece.Length which is already calculated based on UTF-16 units
 		xend := piece.Length
 		if i == endPiece {
 			xend = end - piece.StartCp
 		}
 
-		// Handle bounds checking
-		if xend > len(runes) {
-			xend = len(runes)
+		// Handle bounds checking against UTF-16 length
+		if xend > len(utf16Encoded) {
+			xend = len(utf16Encoded)
 		}
 		if xstart < 0 {
 			xstart = 0
 		}
-		if xstart < len(runes) {
-			result = append(result, string(runes[xstart:xend]))
+		// Ensure start is not greater than end
+		if xstart > xend {
+			xstart = xend
+		}
+
+		// fmt.Printf("xstart: %d, xend: %d\\n", xstart, xend)
+		if xstart < len(utf16Encoded) {
+			// Slice the UTF-16 slice and convert back to UTF-8 string
+			result.WriteString(string(utf16.Decode(utf16Encoded[xstart:xend])))
 		}
 	}
-	return strings.Join(result, "")
+	return result.String() // Use result.String()
 }
 
 func getPieceIndexByFilePos(pieces []Piece, position int) int {
@@ -469,29 +489,56 @@ func getPieceIndexByFilePos(pieces []Piece, position int) int {
 
 func fillPieceRange(piece *Piece, start, end int, character string) {
 	pieceStart := piece.StartCp
-	pieceEnd := pieceStart + piece.Length
+	// pieceEnd := pieceStart + piece.Length // piece.Length is UTF-16 based
+
 	if start < pieceStart {
 		start = pieceStart
 	}
-	if end > pieceEnd {
-		end = pieceEnd
+	// Use piece.Length (UTF-16 based) for end boundary check
+	if end > pieceStart+piece.Length {
+		end = pieceStart + piece.Length
 	}
 
-	// Convert to rune slice for safe unicode operations
-	runes := []rune(piece.Text)
-	startIdx := start - pieceStart
-	endIdx := end - pieceStart
+	// Ensure start is not greater than end
+	if start > end {
+		start = end
+	}
 
-	// Build the modified text using rune slice operations
-	var result []rune
+	// Convert to UTF-16 slice for safe unicode operations
+	utf16Runes := utf16.Encode([]rune(piece.Text))
+	startIdx := start - pieceStart // Index is UTF-16 based
+	endIdx := end - pieceStart     // Index is UTF-16 based
+
+	// Ensure indices are within bounds
+	if startIdx < 0 {
+		startIdx = 0
+	}
+	if endIdx > len(utf16Runes) {
+		endIdx = len(utf16Runes)
+	}
+	if startIdx > endIdx {
+		startIdx = endIdx
+	}
+
+	// Build the modified text using UTF-16 slice operations
+	var result []uint16
 	if startIdx > 0 {
-		result = append(result, runes[:startIdx]...)
+		result = append(result, utf16Runes[:startIdx]...)
 	}
-	result = append(result, []rune(strings.Repeat(character, end-start))...)
-	if endIdx < len(runes) {
-		result = append(result, runes[endIdx:]...)
+	// Repeat the character (converted to UTF-16) for the correct number of UTF-16 units
+	repeatCharUTF16 := utf16.Encode([]rune(character))
+	repeatCount := endIdx - startIdx // Count is based on UTF-16 units
+	for j := 0; j < repeatCount; j++ {
+		result = append(result, repeatCharUTF16...) // Append potentially multiple units if char > BMP
 	}
-	piece.Text = string(result)
+
+	if endIdx < len(utf16Runes) {
+		result = append(result, utf16Runes[endIdx:]...)
+	}
+	piece.Text = string(utf16.Decode(result))
+	// Recalculate length after modification
+	piece.Length = len(result)
+	piece.EndCp = piece.StartCp + piece.Length
 }
 
 func fillPieceRangeByFilePos(piece *Piece, start, end int, character string) {
@@ -503,22 +550,48 @@ func fillPieceRangeByFilePos(piece *Piece, start, end int, character string) {
 	if end > pieceEnd {
 		end = pieceEnd
 	}
+	// Ensure start is not greater than end
+	if start > end {
+		start = end
+	}
 
-	// Convert byte offsets to rune indices
-	runes := []rune(piece.Text)
+	// Convert byte offsets to character indices (which correspond to UTF-16 indices)
 	startIdx := (start - pieceStart) / piece.Bpc
 	endIdx := (end - pieceStart) / piece.Bpc
 
-	// Build the modified text using rune slice operations
-	var result []rune
+	// Convert to UTF-16 slice
+	utf16Runes := utf16.Encode([]rune(piece.Text))
+
+	// Ensure indices are within bounds
+	if startIdx < 0 {
+		startIdx = 0
+	}
+	if endIdx > len(utf16Runes) {
+		endIdx = len(utf16Runes)
+	}
+	if startIdx > endIdx {
+		startIdx = endIdx
+	}
+
+	// Build the modified text using UTF-16 slice operations
+	var result []uint16
 	if startIdx > 0 {
-		result = append(result, runes[:startIdx]...)
+		result = append(result, utf16Runes[:startIdx]...)
 	}
-	result = append(result, []rune(strings.Repeat(character, (end-start)/piece.Bpc))...)
-	if endIdx < len(runes) {
-		result = append(result, runes[endIdx:]...)
+	// Repeat the character (converted to UTF-16) for the correct number of characters
+	repeatCharUTF16 := utf16.Encode([]rune(character))
+	repeatCount := endIdx - startIdx // Count is based on original characters (UTF-16 units)
+	for j := 0; j < repeatCount; j++ {
+		result = append(result, repeatCharUTF16...)
 	}
-	piece.Text = string(result)
+
+	if endIdx < len(utf16Runes) {
+		result = append(result, utf16Runes[endIdx:]...)
+	}
+	piece.Text = string(utf16.Decode(result))
+	// Recalculate length after modification
+	piece.Length = len(result)
+	piece.EndCp = piece.StartCp + piece.Length
 }
 
 func (w *WordOleExtractor) replaceSelectedRange(start, end int, character string) {
@@ -552,6 +625,8 @@ func processSprms(buffer []byte, offset int, handler func(buffer []byte, offset 
 		offset += 2
 
 		handler(buffer, offset, sprm, ispmd, fspec, sgc, spra)
+
+		// fmt.Printf("sprm: %04X, ispmd: %04X, fspec: %02X, sgc: %02X, spra: %02X, buffer: %d, offset: %d\n", sprm, ispmd, fspec, sgc, spra, len(buffer), offset)
 
 		switch spra {
 		case 0, 1:
@@ -594,11 +669,15 @@ func (w *WordOleExtractor) writeParagraphProperties(buffer, tableBuffer []byte) 
 
 			var grpPrlAndIstd []byte
 			if cb := uint32(papxFkpBlockBuffer[cbIndex]); cb != 0 {
+				// fmt.Printf("cb: %d\n", cb)
 				grpPrlAndIstd = papxFkpBlockBuffer[uint32(cbIndex)+1 : uint32(cbIndex)+1+uint32(2*cb)-1]
 			} else {
+				// fmt.Printf("cb: %d\n", cb)
 				cb2 := papxFkpBlockBuffer[cbIndex+1]
-				grpPrlAndIstd = papxFkpBlockBuffer[uint32(cbIndex)+2 : uint32(cbIndex)+2+uint32(2*cb2)]
+				grpPrlAndIstd = papxFkpBlockBuffer[uint32(cbIndex)+2 : uint32(cbIndex)+2+(2*uint32(cb2))]
 			}
+			// fmt.Printf("papxFkpBlockBuffer: %d\n", len(papxFkpBlockBuffer))
+			// fmt.Printf("grpPrlAndIstd: %d\n", len(grpPrlAndIstd))
 			processSprms(grpPrlAndIstd, 2, func(buffer []byte, offset int, sprm uint16, ispmd uint16, fspec uint8, sgc uint8, spra uint8) {
 				if sprm == uint16(0x2417) {
 					w.replaceSelectedRangeByFilePos(int(rgfc), int(rgfcNext), "\n")
@@ -660,6 +739,8 @@ func (w *WordOleExtractor) writeCharacterProperties(buffer, tableBuffer []byte) 
 			}
 
 			grpprl := chpxFkpBlockBuffer[chpxOffset+1 : chpxOffset+1+cb]
+
+			// fmt.Printf("grpprl: %d\n", len(grpprl))
 
 			processSprms(grpprl, 0, func(buffer []byte, offset int, sprm uint16, ispmd uint16, fspec uint8, sgc uint8, spra uint8) {
 				if ispmd == uint16(sprmCFRMarkDel) {

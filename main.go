@@ -13,7 +13,7 @@ func main() {
 	extractor := word_extractor.NewWordExtractor()
 
 	// Test with a file path
-	filePath := "../__tests__/data/test06.docx" // Make sure to have a test Word document in this path
+	filePath := "../__tests__/data/test07.doc" // Make sure to have a test Word document in this path
 	// Validate file path
 	absPath, err := filepath.Abs(filePath)
 	if err != nil {

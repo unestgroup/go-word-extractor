@@ -112,6 +112,7 @@ func filterText(text string) string {
 
 // CleanText cleans Word document text by handling special characters and fields
 func cleanText(text string) string {
+	// fmt.Printf("cleanText: %d\n", len(text))
 	replaceRegex := regexp.MustCompile(`[\x02\x05\x07\x08\x0a\x0b\x0c\x0d\x1f]`)
 	text = replaceRegex.ReplaceAllStringFunc(text, func(match string) string {
 		if match[0] > 0 {
@@ -144,6 +145,8 @@ func cleanText(text string) string {
 		}
 		return r
 	}, text)
+
+	// fmt.Printf("cleanText after fieldRegex: %s\n", text)
 
 	return text
 }
