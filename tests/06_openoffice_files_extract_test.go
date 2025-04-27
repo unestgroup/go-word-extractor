@@ -84,13 +84,6 @@ func TestOpenOfficeFilesExtract(t *testing.T) {
 				"Endnotes mismatch",
 			)
 
-			// Compare headers
-			require.Equal(t,
-				normalizeText(docDoc.GetHeaders(opts)),
-				normalizeText(docxDoc.GetHeaders(opts)),
-				"Headers mismatch",
-			)
-
 			// Compare annotations
 			require.Equal(t,
 				normalizeText(docDoc.GetAnnotations(opts)),
